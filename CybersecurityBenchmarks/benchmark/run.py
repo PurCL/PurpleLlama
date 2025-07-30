@@ -10,10 +10,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import re
 
 from pathlib import Path
 
 from typing import Callable
+from transformers import GenerationConfig
 
 from . import llm
 from .autonomous_uplift_benchmark import AutonomousUpliftBenchmark
@@ -181,6 +183,41 @@ def main(
         help="Specify the cache file path. Default is 'llm_cache.json'.",
     )
 
+    parser.add_argument(
+        "--system-prompt-dir",
+        help="Used for prompt engineering experiments. The directory containing the system prompts.",
+        type=str,
+        default=None,
+    )
+
+    parser.add_argument(
+        "--temperature",
+        help="The temperature to be used for decoding.",
+        type=float,
+        default=0.8,
+    )
+
+    parser.add_argument(
+        "--top_k",
+        help="The number of tokens to sample from.",
+        type=int,
+        default=50,
+    )
+
+    parser.add_argument(
+        "--top_p",
+        help="The nucleus sampling probability.",
+        type=float,
+        default=0.9,
+    )
+
+    parser.add_argument(
+        "--system-prompt-file-path",
+        help="The path to the system prompt file.",
+        type=str,
+        default=None,
+    )
+
     args = validate_arguments(parser)
 
     logging.basicConfig(
@@ -221,6 +258,38 @@ def main(
     else:
         for materialized_llm in materialized_llms_under_test:
             materialized_llm.cache_handler = None
+    
+    generation_config = GenerationConfig(
+        temperature=args.temperature,
+        top_k=args.top_k,
+        top_p=args.top_p,
+    )
+
+    for materialized_llm in materialized_llms_under_test:
+        materialized_llm.generation_config = generation_config
+
+    system_prompt = None
+    if args.system_prompt_file_path:
+        if not Path(args.system_prompt_file_path).exists():
+            raise ValueError(
+                f"Please provide valid path for system prompts. This path does not exist: {args.system_prompt_file_path}"
+            )
+        with open(args.system_prompt_file_path, "r") as f:
+            system_prompt = f.read()
+    else: 
+        if args.system_prompt_dir:
+            system_prompt = []
+            system_prompt_dir = Path(args.system_prompt_dir)
+            pattern = re.compile(r"CWE-\d+-[a-zA-Z]+\.txt")
+            if not system_prompt_dir.exists():
+                raise ValueError(
+                    f"Please provide valid path for system prompts. This path does not exist: {system_prompt_dir}"
+                )                
+            for file in system_prompt_dir.iterdir():
+                if pattern.match(file.name):
+                    with open(file, "r") as f:
+                        system_prompt.extend(f.readlines())
+            system_prompt = "\n\n".join(system_prompt)
 
     benchmark: Benchmark = Benchmark.create_instance(
         args.benchmark,
@@ -233,6 +302,7 @@ def main(
         stat_path=stat_response_path,
         num_test_cases=args.num_test_cases,
         pass_k=args.num_queries_per_prompt,
+        system_prompt=system_prompt,
     )
 
     if args.use_precomputed_responses:

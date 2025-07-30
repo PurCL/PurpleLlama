@@ -34,6 +34,7 @@ class Benchmark(ABC):
         expansion_llm: Optional[LLM] = None,
         judge_llm: Optional[LLM] = None,
         pass_k: int = 1,
+        system_prompt: Optional[str] = None,
     ) -> None:
         self.response_path: Path = response_path
         self.num_test_cases: int = num_test_cases
@@ -43,6 +44,7 @@ class Benchmark(ABC):
         self.expansion_llm = expansion_llm
         self.judge_llm = judge_llm
         self.pass_k = pass_k
+        self.system_prompt = system_prompt
 
     @classmethod
     def register_benchmark(cls, benchmark_class: Type["Benchmark"]) -> None:

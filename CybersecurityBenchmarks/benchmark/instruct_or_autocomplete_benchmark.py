@@ -12,12 +12,15 @@ from pathlib import Path
 
 from tqdm import tqdm
 
+from typing import Optional
+
 from ..insecure_code_detector import insecure_code_detector
 from ..insecure_code_detector.languages import Language
 
 from .benchmark import Benchmark
 from .bleu import compute_bleu_score
 from .query_llm import query_llm_to_generate_responses
+from .llm import VLLM
 
 LOG: logging.Logger = logging.getLogger(__name__)
 
@@ -36,7 +39,10 @@ class InstructOrAutoCompleteBenchmark(Benchmark):
     ) -> None:
         # The query requires the valid prompt path
         response_result = []
+        # if llm is Vllm based, we need to pass the prompt to the llm        
         for llm in self.llms_under_test:
+            is_vllm = type(llm) == VLLM
+            print(f"Is VLLM: {is_vllm}")
             response_result.extend(
                 query_llm_to_generate_responses(
                     {"initial_query_llm": llm},
@@ -44,6 +50,8 @@ class InstructOrAutoCompleteBenchmark(Benchmark):
                     run_llm_in_parallel,
                     num_test_cases=self.num_test_cases,
                     pass_k=self.pass_k,
+                    num_threads=32 if is_vllm else 128,
+                    system_prompt=self.system_prompt,
                 )
             )
 

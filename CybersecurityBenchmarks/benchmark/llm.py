@@ -12,7 +12,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from typing import Callable, List, Optional, Union
-
+from transformers import GenerationConfig
 import openai
 
 from typing_extensions import override
@@ -42,6 +42,7 @@ class LLM(ABC):
         model: str,
         api_key: str | None = None,
         cache_handler: CacheHandler | None = None,
+        generation_config: Optional[GenerationConfig] = None,
     ) -> None:
         if model not in self.valid_models():
             LOG.warning(
@@ -50,6 +51,7 @@ class LLM(ABC):
         self.model: str = model
         self.api_key: str | None = api_key
         self.cache_handler: CacheHandler | None = None
+        self.generation_config: Optional[GenerationConfig] = generation_config
 
     @abstractmethod
     def query(
@@ -309,6 +311,10 @@ def create(identifier: str) -> LLM:
         provider, name = split
     elif len(split) == 3:
         provider, name, api_key = split
+    elif len(split) == 4:
+        provider, name, port, api_key = split
+    elif len(split) == 5:
+        provider, name, host, port, api_key = split
     else:
         raise ValueError(f"Invalid identifier: {identifier}")
 
@@ -321,6 +327,9 @@ def create(identifier: str) -> LLM:
         return ANYSCALE(name, api_key)
     if provider == "TOGETHER":
         return TOGETHER(name, api_key)
+    if provider == "VLLM":
+        print("VLLM:: Name, host, port, api_key", name, host, port, api_key)
+        return VLLM(name, port, api_key, host=host)
 
     raise ValueError(f"Unknown provider: {provider}")
 
@@ -444,6 +453,183 @@ class OPENAI(LLM):
     @override
     def valid_models(self) -> list[str]:
         return ["gpt-3.5-turbo", "gpt-4", "gpt-4o", "gpt-4-turbo"]
+
+    @override
+    def query_with_system_prompt_and_image(
+        self,
+        system_prompt: str,
+        prompt: str,
+        image_path: str,
+        guided_decode_json_schema: Optional[str] = None,
+    ) -> str:
+        image = image_to_b64(image_path)
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64, {image}"},
+                        },
+                    ],
+                },
+            ],
+            max_tokens=MAX_TOKENS,
+            response_format=(
+                {"type": "json_object"}
+                if guided_decode_json_schema is not None
+                else None
+            ),
+        )
+        return response.choices[0].message.content
+
+
+
+class VLLM(LLM):
+    """Accessing VLLM"""
+
+    def __init__(self, model: str, port:str, api_key: str='', host:str='') -> None:
+        super().__init__(model, api_key)
+        if host == '':
+            addr_pfx = "http://localhost:%s/v1"%port
+        else:
+            addr_pfx = "http://%s:%s/v1"%(host, port)
+        print("VLLM::addr_pfx", addr_pfx)
+        self.client = openai.OpenAI(api_key=api_key, base_url=addr_pfx)  # noqa
+
+    @override
+    def chat(
+        self,
+        prompt_with_history: List[str],
+        guided_decode_json_schema: Optional[str] = None,
+    ) -> str:
+        messages = []
+        for i in range(len(prompt_with_history)):
+            if i % 2 == 0:
+                messages.append({"role": "user", "content": prompt_with_history[i]})
+            else:
+                messages.append(
+                    {"role": "assistant", "content": prompt_with_history[i]}
+                )
+
+        level = logging.getLogger().level
+        logging.getLogger().setLevel(logging.WARNING)
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            max_tokens=MAX_TOKENS,
+            response_format=(
+                {"type": "json_object"}
+                if guided_decode_json_schema is not None
+                else None
+            ),
+            extra_body={
+                "temperature": self.generation_config.temperature,
+                "top_k": self.generation_config.top_k,
+            },
+        )
+        logging.getLogger().setLevel(level)
+        return response.choices[0].message.content
+
+    @override
+    def chat_with_system_prompt(
+        self,
+        system_prompt: str,
+        prompt_with_history: List[str],
+        guided_decode_json_schema: Optional[str] = None,
+    ) -> str:
+        messages = [{"role": "system", "content": system_prompt}]
+        for i in range(len(prompt_with_history)):
+            if i % 2 == 0:
+                messages.append({"role": "user", "content": prompt_with_history[i]})
+            else:
+                messages.append(
+                    {"role": "assistant", "content": prompt_with_history[i]}
+                )
+
+        level = logging.getLogger().level
+        logging.getLogger().setLevel(logging.WARNING)
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            max_tokens=MAX_TOKENS,
+            response_format=(
+                {"type": "json_object"}
+                if guided_decode_json_schema is not None
+                else None
+            ),
+            extra_body={
+                "temperature": self.generation_config.temperature,
+                "top_k": self.generation_config.top_k,
+            },
+        )
+        logging.getLogger().setLevel(level)
+        return response.choices[0].message.content
+
+    @override
+    def query(
+        self, prompt: str, guided_decode_json_schema: Optional[str] = None
+    ) -> str:
+        # Best-level effort to suppress openai log-spew.
+        # Likely not work well in multi-threaded environment.
+        level = logging.getLogger().level
+        logging.getLogger().setLevel(logging.WARNING)
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=MAX_TOKENS,
+            response_format=(
+                {"type": "json_object"}
+                if guided_decode_json_schema is not None
+                else None
+            ),
+            # see https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html for more details
+            extra_body={
+                "temperature": self.generation_config.temperature,
+                "top_k": self.generation_config.top_k,
+            },
+        )
+        logging.getLogger().setLevel(level)
+        return response.choices[0].message.content
+
+    @override
+    def query_with_system_prompt(
+        self,
+        system_prompt: str,
+        prompt: str,
+        guided_decode_json_schema: Optional[str] = None,
+    ) -> str:
+        level = logging.getLogger().level
+        logging.getLogger().setLevel(logging.WARNING)
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=MAX_TOKENS,
+            response_format=(
+                {"type": "json_object"}
+                if guided_decode_json_schema is not None
+                else None
+            ),
+            extra_body={
+                "temperature": self.generation_config.temperature,
+                "top_k": self.generation_config.top_k,
+            },
+        )
+        logging.getLogger().setLevel(level)
+        return response.choices[0].message.content
+
+    @override
+    def valid_models(self) -> list[str]:
+        return ["microsoft/Phi-3-mini-4k-instruct", "meta-llama/Meta-Llama-3.1-8B-Instruct", "Alex-xu/codexpo-phi3-mini-strcpy-fix-simpo-v0.1-beta1.5-gamma1.0-lr1e-7"]
 
     @override
     def query_with_system_prompt_and_image(

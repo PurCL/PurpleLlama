@@ -19,10 +19,11 @@ from pathlib import Path
 RULES_ROOT: Path = Path(__file__).parent / "rules"
 ENABLE_REGEX_ANALYZER = True
 
-ENABLE_WEGGLI = False
+# ENABLE_WEGGLI = False
+ENABLE_WEGGLI = True
 WEGGLI_COMMAND: list[str] = [
     os.environ.get("WEGGLI_PATH", "weggli"),
-    "-n",
+    # "-n",
     "-C",
     "-A 0",
     "-B 0",

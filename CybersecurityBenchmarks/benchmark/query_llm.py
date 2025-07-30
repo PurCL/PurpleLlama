@@ -51,6 +51,7 @@ def process_prompts_multi_turn(
         [str], str
     ] = get_another_prompt_with_response,
     num_tries: int = 10,
+    system_prompt: Optional[str] = None,
 ) -> Dict[str, Union[int, str, List[str]]]:
     prompt = cast(
         str,
@@ -108,6 +109,7 @@ def process_prompt_and_user_input(
     llms: Dict[str, LLM],
     test_case: Dict[str, Union[int, str]],
     guided_decode_json_schema: Optional[str] = None,
+    system_prompt: Optional[str] = None,
 ) -> Dict[str, Union[int, str]]:
     prompt = cast(
         str,
@@ -158,6 +160,7 @@ def process_prompt(
     llms: Dict[str, LLM],
     test_case: Dict[str, Union[int, str]],
     guided_decode_json_schema: Optional[str] = None,
+    system_prompt: Optional[str] = None,
 ) -> Dict[str, Union[int, str]]:
     prompt = cast(
         str,
@@ -171,16 +174,26 @@ def process_prompt(
             ),
         ),
     )
+    # get per instance system prompt when available
+    if 'secalign_system_prompt' in test_case:
+        system_prompt = test_case['secalign_system_prompt']
     if not prompt:
         raise ValueError("Prompt cannot be empty.")
     llm = llms["initial_query_llm"]
     if not llm:
         raise ValueError("Initial query LLM must be specified.")
     try:
-        query_result = llm.query_with_retries(
-            prompt,
-            guided_decode_json_schema=guided_decode_json_schema,
-        )
+        if system_prompt:            
+            query_result = llm.query_with_system_prompt_with_retries(
+                system_prompt=system_prompt,
+                prompt=prompt,
+                guided_decode_json_schema=guided_decode_json_schema,
+            )
+        else:
+            query_result = llm.query_with_retries(
+                prompt,
+                guided_decode_json_schema=guided_decode_json_schema,
+            )
     except Exception as e:
         LOG.error(f"Query failed with error: {e}. Failed prompt: {prompt}")
         query_result = "FAIL TO QUERY"
@@ -189,6 +202,7 @@ def process_prompt(
         "pass_id": pass_id,
         "test_case_prompt": prompt,
         "response": query_result,
+        "system_prompt": system_prompt if system_prompt else "",
     }
 
     for field in test_case_fields:
@@ -204,7 +218,7 @@ def query_llm_to_generate_responses(
     llms: Dict[str, LLM],
     prompt_path: Path,
     is_parallel: bool = False,
-    num_threads: int = 20,
+    num_threads: int = 128,
     to_process_prompt: Callable[
         [
             int,
@@ -219,6 +233,7 @@ def query_llm_to_generate_responses(
     pass_k: int = 1,
     enumerate_prompt_and_pass_id: bool = True,
     guided_decode_json_schema: Optional[str] = None,
+    system_prompt: Optional[str] = None,
 ) -> List[Dict[str, Optional[str]]]:
     if not prompt_path.exists():
         raise ValueError("Please provide valid path for prompts.")
@@ -244,6 +259,7 @@ def query_llm_to_generate_responses(
                         llms,
                         test_case,
                         guided_decode_json_schema,
+                        system_prompt,
                     )
                     if enumerate_prompt_and_pass_id
                     else executor.submit(
@@ -253,6 +269,7 @@ def query_llm_to_generate_responses(
                         llms,
                         test_case,
                         guided_decode_json_schema,
+                        system_prompt,
                     )
                 )
                 for idx, test_case in enumerate(prompt_dataset)
@@ -280,6 +297,7 @@ def query_llm_to_generate_responses(
                     llms,
                     test_case,
                     guided_decode_json_schema,
+                    system_prompt,
                 )
             )
     return response_result

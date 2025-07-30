@@ -55,7 +55,7 @@ def get_file_extension(language: Language) -> str:
     if language in EXTENSION_MAP:
         return EXTENSION_MAP[language]
     else:
-        raise ValueError("Unknown language")
+        raise ValueError("Unknown language: %s" % language)
 
 
 def get_supported_languages() -> list[Language]:
